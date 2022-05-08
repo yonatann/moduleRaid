@@ -1,16 +1,12 @@
 import {
   AnyFunction,
   ConstructorModuleTuple,
-  DefaultModuleLike,
-  ModuleLike,
-  ModuleList,
   ModuleRaidParameters,
   WebpackArgument,
-  WebpackRequire,
-  WebpackRequireFunction,
+  WebpackModule,
+  WebpackModuleList,
+  WebpackRequire
 } from './types'
-
-declare function webpackJsonp(...args: WebpackArgument): ModuleLike
 
 /**
  * Main moduleRaid class
@@ -45,12 +41,9 @@ export class ModuleRaid {
       [0],
       [
         (_e: unknown, _t: unknown, i: WebpackRequire) => {
-          const mCac = i.c
-          Object.keys(mCac).forEach((mod) => {
-            this.modules[mod] = mCac[mod].exports
-          })
+          this.modules = i.c!
           this.constructors = i.m as AnyFunction[]
-          this.get = i as unknown as WebpackRequireFunction
+          this.get = i
         },
       ],
     ],
@@ -58,12 +51,9 @@ export class ModuleRaid {
       [1e3],
       {
         [this.moduleID]: (_e: unknown, _t: unknown, i: WebpackRequire) => {
-          const mCac = i.c
-          Object.keys(mCac).forEach((mod: string) => {
-            this.modules[mod] = mCac[mod].exports
-          })
+          this.modules = i.c!
           this.constructors = i.m as AnyFunction[]
-          this.get = i as unknown as WebpackRequireFunction
+          this.get = i
         },
       },
       [[this.moduleID]],
@@ -81,17 +71,17 @@ export class ModuleRaid {
       [this.moduleID],
       {},
       (e: WebpackRequire) => {
-        const mCac = e.m
+        const mCac = e.m!
         Object.keys(mCac).forEach((mod: string) => {
           try {
-            this.modules[mod] = (e as unknown as WebpackRequireFunction)(mod)
-          } catch (err) {
+            this.modules[mod] = e(mod)
+          } catch (err: any) {
             this.log(
               `[arrayArguments/1] Failed to require(${mod}) with error:\n${err}\n${err.stack}`
             )
           }
         })
-        this.get = e as unknown as WebpackRequireFunction
+        this.get = e
       },
     ],
   ]
@@ -99,7 +89,7 @@ export class ModuleRaid {
   /**
    * Storage for the modules we extracted from Webpack
    */
-  public modules: ModuleList = {}
+  public modules: WebpackModuleList = {}
 
   /**
    * Storage for the constructors we extracted from Webpack
@@ -109,7 +99,7 @@ export class ModuleRaid {
   /**
    * Intermediary storage for __webpack_require__ if we were able to extract it
    */
-  public get: WebpackRequireFunction | null = null
+  public get?: WebpackRequire
 
   /**
    * moduleRaid constructor
@@ -129,8 +119,6 @@ export class ModuleRaid {
    *  - **opts:**
    *    - _entrypoint_: the Webpack entrypoint present on the global window object
    *    - _debug_: whether debug mode is enabled or not
-   *  - a single boolean is supported as a fallback to behaviour from versions before 5.1 and should not be used anymore
-   *
    */
   constructor(opts?: ModuleRaidParameters | boolean) {
     let options = {
@@ -143,11 +131,6 @@ export class ModuleRaid {
         ...options,
         ...opts,
       }
-    } else if (typeof opts === 'boolean') {
-      console.warn(
-        `[moduleRaid] Using a single boolean argument is deprecated, please use 'new ModuleRaid({ debug: true })'`
-      )
-      options.debug = opts
     }
 
     this.entrypoint = options.entrypoint
@@ -155,6 +138,7 @@ export class ModuleRaid {
 
     this.fillModules()
     this.replaceGet()
+    this.setupPushEvent()
   }
 
   /**
@@ -186,21 +170,23 @@ export class ModuleRaid {
    * @internal
    */
   private fillModules(): void {
-    if (typeof webpackJsonp === 'function') {
+    if (window[this.entrypoint] === 'function') {
       this.functionArguments.forEach((argument, index) => {
         try {
+          if (this.modules && Object.keys(this.modules).length > 0) return
+
           window[this.entrypoint](...argument)
-        } catch (err) {
+        } catch (err: any) {
           this.log(`moduleRaid.functionArguments[${index}] failed:\n${err}\n${err.stack}`)
         }
       })
     } else {
       this.arrayArguments.forEach((argument, index) => {
         try {
-          (window[this.entrypoint] as ModuleLike[]).push(argument)
-
           if (this.modules && Object.keys(this.modules).length > 0) return
-        } catch (err) {
+
+          window[this.entrypoint].push(argument)
+        } catch (err: any) {
           this.log(
             `Pushing moduleRaid.arrayArguments[${index}] into ${this.entrypoint} failed:\n${err}\n${err.stack}`
           )
@@ -220,10 +206,40 @@ export class ModuleRaid {
         try {
           this.modules[moduleIterator] = window[this.entrypoint]([], [], [moduleIterator])
           moduleIterator++
-        } catch (err) {
+        } catch (err: any) {
           moduleEnd = true
         }
       }
+    }
+  }
+
+  /**
+   * Method to hook into `window[this.entrypoint].push` adding a listener for new
+   * chunks being pushed into Webpack
+   * 
+   * @example
+   * You can listen for newly pushed packages using the `moduleraid:webpack-push` event
+   * on `document`
+   * 
+   * ```ts
+   * document.addEventListener('moduleraid:webpack-push', (e) => {
+   *   // e.detail contains the arguments push() was called with
+   *   console.log(e.detail)
+   * })
+   * ```
+   * @internal
+   */
+  private setupPushEvent() {
+    const originalPush = window[this.entrypoint].push
+
+    window[this.entrypoint].push = (...args: unknown[]) => {
+      const result = Reflect.apply(originalPush, window[this.entrypoint], args)
+
+      document.dispatchEvent(
+        new CustomEvent('moduleraid:webpack-push', { detail: args })
+      );
+  
+      return result
     }
   }
 
@@ -250,8 +266,8 @@ export class ModuleRaid {
    * @param query query to search the module list for
    * @return a list of modules fitting the query
    */
-  public findModule(query: string | ((query: ModuleLike) => boolean)): ModuleLike[] {
-    const results: ModuleLike[] = []
+  public findModule(query: string | ((query: WebpackModule) => boolean)): WebpackModule[] {
+    const results: WebpackModule[] = []
     const modules = Object.keys(this.modules)
 
     if (modules.length === 0) {
@@ -259,22 +275,24 @@ export class ModuleRaid {
     }
 
     modules.forEach((key: string) => {
-      const module = this.modules[key]
+      const module = this.modules[key].exports
 
+      if (module === undefined) return
+      
       try {
         if (typeof query === 'string') {
           query = query.toLowerCase()
 
           switch (typeof module) {
             case 'string':
-              if (module.includes(query)) results.push(module)
+              if ((module as string).toLowerCase().includes(query)) results.push(module)
               break
             case 'function':
-              if (module.toString().toLowerCase().includes(query)) results.push(module)
+              if ((module as AnyFunction).toString().toLowerCase().includes(query)) results.push(module)
               break
             case 'object':
-              if (typeof (module as DefaultModuleLike).default === 'object') {
-                for (key in (module as DefaultModuleLike).default) {
+              if (typeof module.default === 'object') {
+                for (key in module.default) {
                   if (key.toLowerCase() === query) results.push(module)
                 }
               }
@@ -291,7 +309,7 @@ export class ModuleRaid {
             `findModule can only find via string and function, ${typeof query} was passed`
           )
         }
-      } catch (err) {
+      } catch (err: any) {
         this.log(
           `There was an error while searching through module '${key}':\n${err}\n${err.stack}`
         )
@@ -337,7 +355,7 @@ export class ModuleRaid {
    * @returns a list of constructor/module tuples fitting the query
    */
   public findConstructor(
-    query: string | ((query: ModuleLike) => boolean)
+    query: string | ((query: WebpackModule) => boolean)
   ): ConstructorModuleTuple[] {
     const results: ConstructorModuleTuple[] = []
     const constructors = Object.keys(this.constructors)
@@ -354,11 +372,11 @@ export class ModuleRaid {
           query = query.toLowerCase()
 
           if (constructor.toString().toLowerCase().includes(query))
-            results.push([this.constructors[key], this.modules[key]])
+            results.push([this.constructors[key], this.modules[key].exports])
         } else if (typeof query === 'function') {
-          if (query(constructor)) results.push([this.constructors[key], this.modules[key]])
+          if (query(constructor)) results.push([this.constructors[key], this.modules[key].exports])
         }
-      } catch (err) {
+      } catch (err: any) {
         this.log(
           `There was an error while searching through constructor '${key}':\n${err}\n${err.stack}`
         )

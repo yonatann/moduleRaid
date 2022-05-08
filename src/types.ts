@@ -19,35 +19,16 @@ export interface ModuleRaidParameters {
 export type AnyFunction = (...args: unknown[]) => unknown
 
 /**
- * Type describing possible contents of Webpack modules
- */
-export type ModuleLike =
-  | string
-  | number
-  | AnyFunction
-  | Array<{ default: unknown }>
-  | Record<string, unknown>
-  | Array<unknown>
-
-/**
- * Type describing generic contents of default modules
- * @internal
- */
-export type DefaultModuleLike = {
-  default: Record<string, unknown>
-}
-
-/**
  * Type describing the list of modules
  */
-export type ModuleList = {
-  [key in string | number]: ModuleLike
+export type WebpackModuleList = {
+  [key in string | number | symbol]: WebpackCacheModule
 }
 
 /**
  *  Return type for the `findConstructor` method
  */
-export type ConstructorModuleTuple = [AnyFunction, ModuleLike]
+export type ConstructorModuleTuple = [AnyFunction, WebpackModule]
 
 /**
  * Type describing possible arguments to `webpackJsonp`
@@ -65,26 +46,14 @@ export type WebpackArgument = [
 ]
 
 /**
- * Type describing the contents of the Webpack module cache
- * @internal
- */
-export type WebpackModuleCache = {
-  [key: string]: { exports: ModuleLike }
-}
-
-/**
- * Type describing the prototype contents of the __webpack_require__
+ * Type describing the __webpack_require__ function
  * @internal
  */
 export interface WebpackRequire {
-  c: WebpackModuleCache
-  m: AnyFunction[] | WebpackModuleCache
+  c?: WebpackModuleList
+  m?: AnyFunction[] | WebpackModuleList,
+  (key: string | number): WebpackCacheModule
 }
-
-/**
- * Type describing the __webpack_require__ function
- */
-export type WebpackRequireFunction = (key: string | number) => ModuleLike
 
 /**
  * Type describing Webpack module constructors
@@ -93,3 +62,20 @@ export type WebpackRequireFunction = (key: string | number) => ModuleLike
 export type WebpackModuleFunction =
   | ((e: unknown, t: unknown, i: WebpackRequire) => void)
   | ((e: WebpackRequire) => void)
+
+/**
+ * Type describing cached modules in Webpack
+ */
+export type WebpackCacheModule = {
+  i: string | number,
+  l: boolean,
+  exports: WebpackModule
+}
+
+/**
+ * Type describing general modules
+ */
+export type WebpackModule = {
+  default?: any,
+  [key: string]: any
+}
